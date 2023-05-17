@@ -1,3 +1,4 @@
+import os
 import copy
 import logging
 import torch
@@ -38,10 +39,28 @@ from convs.memo_resnet import get_resnet26_imagenet as memo_resnet26_imagenet
 from convs.memo_resnet import get_resnet34_imagenet as memo_resnet34_imagenet
 from convs.memo_resnet import get_resnet50_imagenet as memo_resnet50_imagenet
 
+
+
+#TODO Import environment code from watermaze repository
+
+from watermaze.environment import *
+from watermaze.models import *
+
+
+
 def get_convnet(convnet_type, pretrained=False):
     name = convnet_type.lower()
     if name == "resnet32":
         return resnet32()
+    
+    # Added my own network
+    elif name == "wm":
+        return DualInputDeep()
+
+
+
+
+
     elif name == "resnet18":
         return resnet18(pretrained=pretrained)
     elif name == "resnet34":
@@ -213,7 +232,7 @@ class IncrementalNet(BaseNet):
         self.fc.weight.data[-increment:, :] *= gamma
 
     def generate_fc(self, in_dim, out_dim):
-        fc = SimpleLinear(in_dim, out_dim)
+        fc = SimpleLinear(in_dim, 4)
 
         return fc
 

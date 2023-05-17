@@ -11,41 +11,60 @@ from models.podnet import pod_spatial_loss
 from utils.inc_net import IncrementalNet
 from utils.toolkit import target2onehot, tensor2numpy
 
+import sys
+from watermaze.environment import *
+
+def one_hot(num):
+    """
+    Given a number between 0-3, returns a one-hot tensor in PyTorch.
+    """
+    one_hot_vec = torch.zeros(4)
+    one_hot_vec[num] = 1
+    return one_hot_vec
 EPSILON = 1e-8
 
-init_epoch = 200
+init_epoch = 1
 init_lr = 0.1
 init_milestones = [60, 120, 170]
 init_lr_decay = 0.1
 init_weight_decay = 0.0005
 
 
-epochs = 180
+epochs = 1
 lrate = 0.1
 milestones = [70, 120, 150]
 lrate_decay = 0.1
-batch_size = 128
+batch_size = 1
 weight_decay = 2e-4
 num_workers = 4
 T = 2
 lamda = 1000
 fishermax = 0.0001
-
+SEQUENCE_LENGTH = 100
 
 class EWC(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.fisher = None
         self._network = IncrementalNet(args["convnet_type"], False)
+        
+        NUM_OF_ENVS = 5
+
+        self.envs = {}
+        for i in np.arange(NUM_OF_ENVS):
+            env_name = f"{i}" #to keep 1 index names
+            self.envs[env_name] = SquareMaze(size = 15, observation_size = 1000, name = f"{i}")
+            
 
     def after_task(self):
         self._known_classes = self._total_classes
 
     def incremental_train(self, data_manager):
-        self._cur_task += 1
+        self._cur_task += 1 
         self._total_classes = self._known_classes + data_manager.get_task_size(
             self._cur_task
         )
+        #TODO Check
         self._network.update_fc(self._total_classes)
         logging.info(
             "Learning on {}-{}".format(self._known_classes, self._total_classes)
@@ -126,26 +145,68 @@ class EWC(BaseLearner):
             self._update_representation(train_loader, test_loader, optimizer, scheduler)
 
     def _init_train(self, train_loader, test_loader, optimizer, scheduler):
+      
+        #breakpoint()
         prog_bar = tqdm(range(init_epoch))
         for _, epoch in enumerate(prog_bar):
+
             self._network.train()
             losses = 0.0
             correct, total = 0, 0
-            for i, (_, inputs, targets) in enumerate(train_loader):
-                inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
-                loss = F.cross_entropy(logits, targets)
+            e_t = tqdm(enumerate(train_loader))
+            for i, (_, inputs, targets) in e_t:
+                # TODO Given the start and goal location, run exp.
+
+                env = self.envs[str(targets.item())]
+                #breakpoint()
+
+                env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+
+
+
+                loss = 0
+                #breakpoint()
+                for _ in range(SEQUENCE_LENGTH):
+
+                    if env.success:
+                        break
+
+
+                    obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                    head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                    pred = self._network([obs, head_direction])
+                    pred = pred["logits"]
+                    y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+
+                    loss += F.cross_entropy(pred, y) #TODO add loss function
+
+                    pred_step = torch.argmax(pred)
+                    #breakpoint()
+                    env.step(pred_step)
+                
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                losses += loss.item()
 
-                _, preds = torch.max(logits, dim=1)
-                correct += preds.eq(targets.expand_as(preds)).cpu().sum()
-                total += len(targets)
+                losses += loss.item()
+                correct += int(env.success)
+                e_t.set_postfix(correct = correct)
+                total += 1
+                #inputs, targets = inputs.to(self._device), targets.to(self._device)
+                #logits = self._network(inputs)["logits"]
+                #loss = F.cross_entropy(logits, targets)
+                #optimizer.zero_grad()
+                #loss.backward()
+                #optimizer.step()
+                #losses += loss.item()
+
+                #_, preds = torch.max(logits, dim=1)
+                #correct += preds.eq(targets.expand_as()).cpu().sum()
+                #total += len(targets)
 
             scheduler.step()
-            train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+            train_acc = np.around((correct) * 100 / total, decimals=2)
 
             if epoch % 5 == 0:
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}".format(
@@ -168,6 +229,54 @@ class EWC(BaseLearner):
             prog_bar.set_description(info)
 
         logging.info(info)
+
+    def eval_task(self, save_conf = False):
+        test_loader = self.test_loader
+        #TODO
+        
+        self._network.eval()
+        losses = 0.0
+        correct, total = 0, 0
+        e_t = tqdm(enumerate(test_loader))
+        for i, (_, inputs, targets) in e_t:
+            # TODO Given the start and goal location, run exp.
+            env = self.envs[str(targets.item())]
+            #breakpoint()
+
+            env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+
+            loss = 0
+            #breakpoint()
+            for _ in range(SEQUENCE_LENGTH):
+
+                if env.success:
+                    break
+
+
+                obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                pred = self._network([obs, head_direction])
+                pred = pred["logits"]
+                y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+
+                loss += F.cross_entropy(pred, y) #TODO add loss function
+
+                pred_step = torch.argmax(pred)
+                #breakpoint()
+                env.step(pred_step)
+            correct += env.success
+            total += 1
+        res = {}
+        res["grouped"] = correct/total
+        res["top1"] = correct
+        res["top10"] = correct
+        res["top5"] = correct
+        return res, res
+
+
+
+
 
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(epochs))
@@ -175,27 +284,60 @@ class EWC(BaseLearner):
             self._network.train()
             losses = 0.0
             correct, total = 0, 0
-            for i, (_, inputs, targets) in enumerate(train_loader):
-                inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
 
-                loss_clf = F.cross_entropy(
-                    logits[:, self._known_classes :], targets - self._known_classes
-                )
-                loss_ewc = self.compute_ewc()
-                loss = loss_clf + lamda * loss_ewc
+            e_t = tqdm(enumerate(train_loader))
+            for i, (_, inputs, targets) in e_t:
 
+                # TODO Given the start and goal location, run exp.
+                env = self.envs[str(targets.item())]
+
+                env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+         
+
+
+                loss = 0
+                #breakpoint()
+                for _ in range(SEQUENCE_LENGTH):
+
+                    if env.success:
+                        break
+
+
+                    obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                    head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                    pred = self._network([obs, head_direction])
+                    pred = pred["logits"]
+                    y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+                    loss += F.cross_entropy(pred, y) #TODO add loss function
+
+
+                    pred_step = torch.argmax(pred)
+                    #breakpoint()
+                    env.step(pred_step)
+                
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                losses += loss.item()
 
-                _, preds = torch.max(logits, dim=1)
-                correct += preds.eq(targets.expand_as(preds)).cpu().sum()
-                total += len(targets)
+                losses += loss.item()
+                correct += int(env.success)
+                e_t.set_postfix(correct = correct)
+                total += 1
+                #inputs, targets = inputs.to(self._device), targets.to(self._device)
+                #logits = self._network(inputs)["logits"]
+                #loss = F.cross_entropy(logits, targets)
+                #optimizer.zero_grad()
+                #loss.backward()
+                #optimizer.step()
+                #losses += loss.item()
+
+                #_, preds = torch.max(logits, dim=1)
+                #correct += preds.eq(targets.expand_as()).cpu().sum()
+                #total += len(targets)
 
             scheduler.step()
-            train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+            train_acc = np.around((correct) * 100 / total, decimals=2)
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
                 info = "Task {}, Epoch {}/{} => Loss {:.3f}, Train_accy {:.2f}, Test_accy {:.2f}".format(
@@ -216,6 +358,43 @@ class EWC(BaseLearner):
                 )
             prog_bar.set_description(info)
         logging.info(info)
+
+
+    def _compute_accuracy(self, model, loader):
+        model.eval()
+        correct, total = 0, 0
+        for i, (_, inputs, targets) in enumerate(loader):
+            
+            # TODO Given the start and goal location, run exp.
+            env = self.envs[str(targets.item())]
+
+            env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+     
+            loss = 0
+            #breakpoint()
+            for _ in range(SEQUENCE_LENGTH):
+
+                if env.success:
+                    break
+
+
+                obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                pred = self._network([obs, head_direction])
+                pred = pred["logits"]
+                y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+
+
+                pred_step = torch.argmax(pred)
+                #breakpoint()
+                env.step(pred_step)
+            
+            correct += int(env.success)
+            total += 1
+        return np.around((correct) * 100 / total, decimals=2)
+
+
 
     def compute_ewc(self):
         loss = 0
@@ -250,11 +429,46 @@ class EWC(BaseLearner):
         self._network.train()
         optimizer = optim.SGD(self._network.parameters(), lr=lrate)
         for i, (_, inputs, targets) in enumerate(train_loader):
-            inputs, targets = inputs.to(self._device), targets.to(self._device)
-            logits = self._network(inputs)["logits"]
-            loss = torch.nn.functional.cross_entropy(logits, targets)
+
+        
+            env = self.envs[str(targets.item())]
+            #breakpoint()
+
+            env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+
+
+
+            loss = 0
+            #breakpoint()
+            for _ in range(SEQUENCE_LENGTH):
+
+                if env.success:
+                    break
+
+
+                obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                pred = self._network([obs, head_direction])
+                pred = pred["logits"]
+                y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+
+                loss += F.cross_entropy(pred, y) #TODO add loss function
+
+                pred_step = torch.argmax(pred)
+                #breakpoint()
+                env.step(pred_step)
+            
             optimizer.zero_grad()
             loss.backward()
+
+
+
+            #inputs, targets = inputs.to(self._device), targets.to(self._device)
+            #logits = self._network(inputs)["logits"]
+            #loss = torch.nn.functional.cross_entropy(logits, targets)
+#            optimizer.zero_grad()
+#            loss.backward()
             for n, p in self._network.named_parameters():
                 if p.grad is not None:
                     fisher[n] += p.grad.pow(2).clone()
@@ -262,3 +476,11 @@ class EWC(BaseLearner):
             fisher[n] = p / len(train_loader)
             fisher[n] = torch.min(fisher[n], torch.tensor(fishermax))
         return fisher
+
+
+
+
+
+if __name__ == "__main__":
+    start = EWC()
+    print(start.envs)

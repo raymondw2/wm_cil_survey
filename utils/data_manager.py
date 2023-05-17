@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000
+from utils.data import iCIFAR10, iCIFAR100, iImageNet100, iImageNet1000, iWaterMaze
 
 
 class DataManager(object):
@@ -137,7 +137,7 @@ class DataManager(object):
     def _setup_data(self, dataset_name, shuffle, seed):
         idata = _get_idata(dataset_name)
         idata.download_data()
-
+        shuffle = False #I set this
         # Data
         self._train_data, self._train_targets = idata.train_data, idata.train_targets
         self._test_data, self._test_targets = idata.test_data, idata.test_targets
@@ -199,9 +199,9 @@ class DummyDataset(Dataset):
 
     def __getitem__(self, idx):
         if self.use_path:
-            image = self.trsf(pil_loader(self.images[idx]))
+            image = self.images[idx]
         else:
-            image = self.trsf(Image.fromarray(self.images[idx]))
+            image = self.images[idx]
         label = self.labels[idx]
 
         return idx, image, label
@@ -221,6 +221,8 @@ def _get_idata(dataset_name):
         return iImageNet1000()
     elif name == "imagenet100":
         return iImageNet100()
+    elif name == 'wm':
+        return iWaterMaze()
     else:
         raise NotImplementedError("Unknown dataset {}.".format(dataset_name))
 
