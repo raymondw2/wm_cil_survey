@@ -269,7 +269,7 @@ class EWC(BaseLearner):
             total += 1
         res = {}
         res["grouped"] = correct/total
-        res["top1"] = correct
+        res["top1"] = correct/total
         res["top10"] = correct
         res["top5"] = correct
         return res, res
