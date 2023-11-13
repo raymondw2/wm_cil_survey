@@ -24,14 +24,14 @@ def one_hot(num):
 EPSILON = 1e-8
 
 init_epoch = 1
-init_lr = 0.1
+init_lr = 0.001
 init_milestones = [60, 120, 170]
 init_lr_decay = 0.1
 init_weight_decay = 0.0005
 
 
 epochs = 1
-lrate = 0.1
+lrate = 0.001
 milestones = [70, 120, 150]
 lrate_decay = 0.1
 batch_size = 1
@@ -111,17 +111,22 @@ class EWC(BaseLearner):
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
         if self._cur_task == 0:
-            optimizer = optim.SGD(
+            optimizer = optim.Adam(
                 self._network.parameters(),
-                momentum=0.9,
                 lr=init_lr,
-                weight_decay=init_weight_decay,
-            )
+                )
+            if False:
+                optimizer = optim.SGD(
+                    self._network.parameters(),
+                    lr=init_lr,
+                    momentum=0.9,
+                    weight_decay=init_weight_decay,
+                )
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=init_milestones, gamma=init_lr_decay
             )
             
-            if self.args['skip'] :
+            if self.args['skip']:
                 if len(self._multiple_gpus) > 1:
                     self._network = self._network.module
                 load_acc = self._network.load_checkpoint(self.args)
@@ -133,12 +138,17 @@ class EWC(BaseLearner):
             else:
                 self._init_train(train_loader, test_loader, optimizer, scheduler)
         else:
-            optimizer = optim.SGD(
+            optimizer = optim.Adam(
                 self._network.parameters(),
                 lr=lrate,
-                momentum=0.9,
-                weight_decay=weight_decay,
-            )
+                )
+            if False:
+                optimizer = optim.SGD(
+                    self._network.parameters(),
+                    lr=lrate,
+                    momentum=0.9,
+                    weight_decay=weight_decay,
+                )
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer=optimizer, milestones=milestones, gamma=lrate_decay
             )
@@ -162,33 +172,30 @@ class EWC(BaseLearner):
 
                 env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
 
-
-
                 loss = 0
                 #breakpoint()
+                count = 0
                 for _ in range(SEQUENCE_LENGTH):
-
                     if env.success:
                         break
-
-
                     obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
                     head_direction = one_hot(env.prev_move_global).to(self._device)
 
                     pred = self._network([obs, head_direction])
                     pred = pred["logits"]
                     y = torch.tensor(env.find_optimal_move()).to(self._device).long()
-
-                    loss += F.cross_entropy(pred, y) #TODO add loss function
+                    _loss = F.cross_entropy(pred, y) #TODO add loss function
+                    loss += _loss
+                    count += 1
 
                     pred_step = torch.argmax(pred)
                     #breakpoint()
                     env.step(pred_step)
                 
+                loss /= count
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-
                 losses += loss.item()
                 correct += int(env.success)
                 e_t.set_postfix(correct = correct)
@@ -237,39 +244,36 @@ class EWC(BaseLearner):
         self._network.eval()
         losses = 0.0
         correct, total = 0, 0
+        grouped = {i: [0, 0] for i in range(5)}
         e_t = tqdm(enumerate(test_loader))
         for i, (_, inputs, targets) in e_t:
             # TODO Given the start and goal location, run exp.
             env = self.envs[str(targets.item())]
             #breakpoint()
-
             env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
-
             loss = 0
             #breakpoint()
             for _ in range(SEQUENCE_LENGTH):
-
                 if env.success:
                     break
-
-
                 obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
                 head_direction = one_hot(env.prev_move_global).to(self._device)
 
                 pred = self._network([obs, head_direction])
                 pred = pred["logits"]
                 y = torch.tensor(env.find_optimal_move()).to(self._device).long()
-
-                loss += F.cross_entropy(pred, y) #TODO add loss function
-
                 pred_step = torch.argmax(pred)
                 #breakpoint()
                 env.step(pred_step)
             correct += env.success
+            grouped[targets.item()][1] += 1
+            grouped[targets.item()][0] += env.success
             total += 1
         res = {}
-        res["grouped"] = correct/total
-        res["top1"] = correct
+        _grouped = {str(k): v[0] / max(v[1], 1) for k, v in grouped.items()}
+        _grouped.update({'num'+str(k): v[1] for k, v in grouped.items()})
+        res["grouped"] = _grouped
+        res["top1"] = correct/total
         res["top10"] = correct
         res["top5"] = correct
         return res, res
@@ -292,17 +296,12 @@ class EWC(BaseLearner):
                 env = self.envs[str(targets.item())]
 
                 env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
-         
-
-
                 loss = 0
                 #breakpoint()
+                count = 0
                 for _ in range(SEQUENCE_LENGTH):
-
                     if env.success:
                         break
-
-
                     obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
                     head_direction = one_hot(env.prev_move_global).to(self._device)
 
@@ -310,6 +309,7 @@ class EWC(BaseLearner):
                     pred = pred["logits"]
                     y = torch.tensor(env.find_optimal_move()).to(self._device).long()
                     loss += F.cross_entropy(pred, y) #TODO add loss function
+                    count += 1
 
 
                     pred_step = torch.argmax(pred)
@@ -317,6 +317,8 @@ class EWC(BaseLearner):
                     env.step(pred_step)
                 
                 optimizer.zero_grad()
+                loss_ewc = self.compute_ewc()
+                loss = loss / count + lamda * loss_ewc
                 loss.backward()
                 optimizer.step()
 
@@ -427,25 +429,18 @@ class EWC(BaseLearner):
             if p.requires_grad
         }
         self._network.train()
-        optimizer = optim.SGD(self._network.parameters(), lr=lrate)
+#        optimizer = optim.SGD(self._network.parameters(), lr=lrate)
+        optimizer = optim.Adam(self._network.parameters(), lr=lrate)
         for i, (_, inputs, targets) in enumerate(train_loader):
-
-        
             env = self.envs[str(targets.item())]
             #breakpoint()
 
             env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
-
-
-
             loss = 0
             #breakpoint()
             for _ in range(SEQUENCE_LENGTH):
-
                 if env.success:
                     break
-
-
                 obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
                 head_direction = one_hot(env.prev_move_global).to(self._device)
 
