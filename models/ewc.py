@@ -270,13 +270,9 @@ class EWC(BaseLearner):
             grouped[targets.item()][0] += env.success
             total += 1
         res = {}
-<<<<<<< HEAD
-        res["grouped"] = correct/total
-=======
         _grouped = {str(k): v[0] / max(v[1], 1) for k, v in grouped.items()}
         _grouped.update({'num'+str(k): v[1] for k, v in grouped.items()})
         res["grouped"] = _grouped
->>>>>>> cdf5e5ef67844527a85a12010533bd9a9521fb1d
         res["top1"] = correct/total
         res["top10"] = correct
         res["top5"] = correct
