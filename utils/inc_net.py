@@ -55,7 +55,7 @@ def get_convnet(convnet_type, pretrained=False):
     
     # Added my own network
     elif name == "wm":
-        return DualInputDeep()
+        return DualInputDeep_EWC()
 
 
 
