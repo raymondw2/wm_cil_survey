@@ -10,6 +10,22 @@ from models.base import BaseLearner
 from utils.inc_net import DERNet, IncrementalNet
 from utils.toolkit import count_parameters, target2onehot, tensor2numpy
 
+##added
+import sys
+from watermaze.environment import *
+
+def one_hot(num):
+    """
+    Given a number between 0-3, returns a one-hot tensor in PyTorch.
+    """
+    one_hot_vec = torch.zeros(4)
+    one_hot_vec[num] = 1
+    return one_hot_vec
+
+##end added
+
+
+
 EPSILON = 1e-8
 
 init_epoch = 200
@@ -28,12 +44,23 @@ weight_decay = 2e-4
 num_workers = 8
 T = 2
 
+#added
+SEQUENCE_LENGTH = 100
 
 class DER(BaseLearner):
     def __init__(self, args):
         super().__init__(args)
         self.args = args
         self._network = DERNet(args["convnet_type"], False)
+        
+        ##added
+        NUM_OF_ENVS = 5
+
+        self.envs = {}
+        for i in np.arange(NUM_OF_ENVS):
+            env_name = f"{i}" #to keep 1 index names
+            self.envs[env_name] = SquareMaze(size = 15, observation_size = 1000, name = f"{i}")
+        ##end added
 
     def after_task(self):
         self._known_classes = self._total_classes
@@ -95,7 +122,7 @@ class DER(BaseLearner):
 
     def _train(self, train_loader, test_loader):
         self._network.to(self._device)
-        if self._cur_task == 0:
+        if self._cur_task == 0: ##NOTE Possible ADAM
             optimizer = optim.SGD(
                 filter(lambda p: p.requires_grad, self._network.parameters()),
                 momentum=0.9,
@@ -136,19 +163,43 @@ class DER(BaseLearner):
             self.train()
             losses = 0.0
             correct, total = 0, 0
-            for i, (_, inputs, targets) in enumerate(train_loader):
-                inputs, targets = inputs.to(self._device), targets.to(self._device)
-                logits = self._network(inputs)["logits"]
+            e_t = tqdm(enumerate(train_loader))
+            for i, (_, inputs, targets) in e_t:
+                # TODO Given the start and goal location, run exp.
 
-                loss = F.cross_entropy(logits, targets)
+                env = self.envs[str(targets.item())]
+                #breakpoint()
+
+                env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+
+                loss = 0
+                #breakpoint()
+                count = 0
+                for _ in range(SEQUENCE_LENGTH):
+                    if env.success:
+                        break
+                    obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                    head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                    pred = self._network([obs, head_direction])
+                    pred = pred["logits"]
+                    y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+                    _loss = F.cross_entropy(pred, y) #TODO add loss function
+                    loss += _loss
+                    count += 1
+
+                    pred_step = torch.argmax(pred)
+                    #breakpoint()
+                    env.step(pred_step)
+                
+                loss /= count
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 losses += loss.item()
-
-                _, preds = torch.max(logits, dim=1)
-                correct += preds.eq(targets.expand_as(preds)).cpu().sum()
-                total += len(targets)
+                correct += int(env.success)
+                e_t.set_postfix(correct = correct)
+                total += 1
 
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
@@ -183,30 +234,47 @@ class DER(BaseLearner):
             losses_clf = 0.0
             losses_aux = 0.0
             correct, total = 0, 0
-            for i, (_, inputs, targets) in enumerate(train_loader):
-                inputs, targets = inputs.to(self._device), targets.to(self._device)
-                outputs = self._network(inputs)
-                logits, aux_logits = outputs["logits"], outputs["aux_logits"]
-                loss_clf = F.cross_entropy(logits, targets)
-                aux_targets = targets.clone()
-                aux_targets = torch.where(
-                    aux_targets - self._known_classes + 1 > 0,
-                    aux_targets - self._known_classes + 1,
-                    0,
-                )
-                loss_aux = F.cross_entropy(aux_logits, aux_targets)
-                loss = loss_clf + loss_aux
 
+
+            e_t = tqdm(enumerate(train_loader))
+            for i, (_, inputs, targets) in e_t:
+
+                # TODO Given the start and goal location, run exp.
+                env = self.envs[str(targets.item())]
+
+                env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+                loss = 0
+                #breakpoint()
+                count = 0
+                for _ in range(SEQUENCE_LENGTH):
+                    if env.success:
+                        break
+                    obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                    head_direction = one_hot(env.prev_move_global).to(self._device)
+
+                    pred = self._network([obs, head_direction])
+                    pred = pred["logits"]
+                    y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+                    loss += F.cross_entropy(pred, y) #TODO add loss function
+                    count += 1
+
+
+                    pred_step = torch.argmax(pred)
+                    #breakpoint()
+                    env.step(pred_step)
+                
                 optimizer.zero_grad()
+                loss = loss.item()
+                losses_aux += loss.item()
+                losses_clf += loss.item()
+
                 loss.backward()
                 optimizer.step()
-                losses += loss.item()
-                losses_aux += loss_aux.item()
-                losses_clf += loss_clf.item()
 
-                _, preds = torch.max(logits, dim=1)
-                correct += preds.eq(targets.expand_as(preds)).cpu().sum()
-                total += len(targets)
+                losses += loss.item()
+                correct += int(env.success)
+                e_t.set_postfix(correct = correct)
+                total += 1
 
             scheduler.step()
             train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
