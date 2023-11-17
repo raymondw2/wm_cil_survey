@@ -68,9 +68,10 @@ class DER(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
-        self._total_classes = self._known_classes + data_manager.get_task_size(
-            self._cur_task
-        )
+        self._total_classes = 4
+        #self._known_classes + data_manager.get_task_size(
+        #    self._cur_task
+        #)
         self._network.update_fc(self._total_classes)
         logging.info(
             "Learning on {}-{}".format(self._known_classes, self._total_classes)
@@ -167,7 +168,9 @@ class DER(BaseLearner):
             for i, (_, inputs, targets) in e_t:
                 # TODO Given the start and goal location, run exp.
 
-                env = self.envs[str(targets.item())]
+                #breakpoint()
+                env = self.envs[str(targets[0].item())]
+                
                 #breakpoint()
 
                 env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
@@ -180,10 +183,11 @@ class DER(BaseLearner):
                         break
                     obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
                     head_direction = one_hot(env.prev_move_global).to(self._device)
-
                     pred = self._network([obs, head_direction])
+
                     pred = pred["logits"]
                     y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+                    y = y.view(1,)
                     _loss = F.cross_entropy(pred, y) #TODO add loss function
                     loss += _loss
                     count += 1
@@ -202,7 +206,8 @@ class DER(BaseLearner):
                 total += 1
 
             scheduler.step()
-            train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+            train_acc = np.around(correct/total, decimals = 2)
+#            train_acc = np.around(tensor2numpy(correct) * 100 / total, decimals=2)
 
             if epoch % 5 == 0:
                 test_acc = self._compute_accuracy(self._network, test_loader)
@@ -226,6 +231,40 @@ class DER(BaseLearner):
 
         logging.info(info)
 
+    def _compute_accuracy(self, model, loader):
+        model.eval()
+        correct, total = 0,0
+        
+        e_t = tqdm(enumerate(loader))
+        for i, (_, inputs, targets) in e_t:
+            # TODO Given the start and goal location, run exp.
+
+            #breakpoint()
+            env = self.envs[str(targets[0].item())]
+            
+            #breakpoint()
+
+            env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
+
+            loss = 0
+            #breakpoint()
+            count = 0
+            for _ in range(SEQUENCE_LENGTH):
+                if env.success:
+                    break
+                obs = torch.Tensor(env.get_vision()).to(self._device).reshape(1,1000)
+                head_direction = one_hot(env.prev_move_global).to(self._device)
+                pred = self._network([obs, head_direction])
+
+                pred = pred["logits"]
+                count += 1
+
+                pred_step = torch.argmax(pred)
+                #breakpoint()
+                env.step(pred_step)
+            correct += int(env.success)
+            total += 1
+        return np.around(correct/total, decimals=2)
     def _update_representation(self, train_loader, test_loader, optimizer, scheduler):
         prog_bar = tqdm(range(epochs))
         for _, epoch in enumerate(prog_bar):
@@ -240,8 +279,8 @@ class DER(BaseLearner):
             for i, (_, inputs, targets) in e_t:
 
                 # TODO Given the start and goal location, run exp.
-                env = self.envs[str(targets.item())]
 
+                env = self.envs[str(targets[0].item())]
                 env.reset(inputs[0][:2].cpu().numpy(), inputs[0][2].item())
                 loss = 0
                 #breakpoint()
@@ -255,6 +294,7 @@ class DER(BaseLearner):
                     pred = self._network([obs, head_direction])
                     pred = pred["logits"]
                     y = torch.tensor(env.find_optimal_move()).to(self._device).long()
+                    y = y.view(1,)
                     loss += F.cross_entropy(pred, y) #TODO add loss function
                     count += 1
 
@@ -265,7 +305,7 @@ class DER(BaseLearner):
                 
                 optimizer.zero_grad()
                 loss = loss.item()
-                losses_aux += loss.item()
+                losses_aux += loss.item() * 0
                 losses_clf += loss.item()
 
                 loss.backward()

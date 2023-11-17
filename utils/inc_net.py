@@ -398,12 +398,19 @@ class DERNet(nn.Module):
 
     def extract_vector(self, x):
         features = [convnet(x)["features"] for convnet in self.convnets]
-        features = torch.cat(features, 1)
+        if len(features[0].shape) == 1:
+            features = torch.cat(features, 0).unsqueeze(0)
+        else:
+            features = torch.cat(features, 1)
         return features
 
     def forward(self, x):
         features = [convnet(x)["features"] for convnet in self.convnets]
-        features = torch.cat(features, 1)
+        if len(features[0].shape) == 1:
+            features = torch.cat(features, 0).unsqueeze(0)
+        else:
+            features = torch.cat(features, 1)
+
 
         out = self.fc(features)  # {logics: self.fc(features)}
 
